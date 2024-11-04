@@ -1,7 +1,7 @@
 from .__about__ import __version__
 from .client import app
 from .config import OperationType, get_config
-from .main import DataFog, TextPIIAnnotator
+from .main import DataFog
 from .models.annotator import (
     AnalysisExplanation,
     AnnotationResult,
@@ -30,7 +30,6 @@ __all__ = [
     "ImageService",
     "OperationType",
     "SparkService",
-    "TextPIIAnnotator",
     "TextService",
     "SpacyPIIAnnotator",
     "ImageDownloader",
