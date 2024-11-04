@@ -15,7 +15,7 @@ from typing import List
 
 from .config import OperationType
 from .models.anonymizer import Anonymizer, AnonymizerType, HashType
-from .processing.text_processing.spacy_pii_annotator import SpacyPIIAnnotator
+from .models.spacy_nlp import SpacyAnnotator
 from .services.image_service import ImageService
 from .services.spark_service import SparkService
 from .services.text_service import TextService
@@ -36,6 +36,7 @@ class DataFog:
         spark_service: Optional Spark service for distributed processing.
         operations: List of operations to perform.
         anonymizer: Anonymizer for PII redaction, replacement, or hashing.
+        annotator: SpacyAnnotator instance for text annotation.
     """
 
     def __init__(
@@ -54,6 +55,7 @@ class DataFog:
         self.anonymizer = Anonymizer(
             hash_type=hash_type, anonymizer_type=anonymizer_type
         )
+        self.annotator = SpacyAnnotator()
         self.logger = logging.getLogger(__name__)
         self.logger.info(
             "Initializing DataFog class with the following services and operations:"
@@ -120,63 +122,51 @@ class DataFog:
         """
         Internal method to process text based on enabled operations.
         """
-        if OperationType.SCAN in self.operations:
-            annotated_text = await self.text_service.batch_annotate_text_async(
-                text_list
-            )
-            self.logger.info(
-                f"Text annotation completed with {len(annotated_text)} annotations."
-            )
+        try:
+            if OperationType.SCAN in self.operations:
+                annotated_text = [
+                    self.annotator.annotate_text(text) for text in text_list
+                ]
 
-            if OperationType.REDACT in self.operations:
-                return [
-                    self.anonymizer.anonymize(
-                        text, annotations, AnonymizerType.REDACT
-                    ).anonymized_text
-                    for text, annotations in zip(text_list, annotated_text, strict=True)
-                ]
-            elif OperationType.REPLACE in self.operations:
-                return [
-                    self.anonymizer.anonymize(
-                        text, annotations, AnonymizerType.REPLACE
-                    ).anonymized_text
-                    for text, annotations in zip(text_list, annotated_text, strict=True)
-                ]
-            elif OperationType.HASH in self.operations:
-                return [
-                    self.anonymizer.anonymize(
-                        text, annotations, AnonymizerType.HASH
-                    ).anonymized_text
-                    for text, annotations in zip(text_list, annotated_text, strict=True)
-                ]
-            else:
+                if OperationType.REDACT in self.operations:
+                    self.anonymizer.anonymizer_type = AnonymizerType.REDACT
+                elif OperationType.REPLACE in self.operations:
+                    self.anonymizer.anonymizer_type = AnonymizerType.REPLACE
+                elif OperationType.HASH in self.operations:
+                    self.anonymizer.anonymizer_type = AnonymizerType.HASH
+
+                if any(
+                    op in self.operations
+                    for op in [
+                        OperationType.REDACT,
+                        OperationType.REPLACE,
+                        OperationType.HASH,
+                    ]
+                ):
+                    return [
+                        self.anonymizer.anonymize(text, annotations).anonymized_text
+                        for text, annotations in zip(
+                            text_list, annotated_text, strict=True
+                        )
+                    ]
                 return annotated_text
 
-        self.logger.info(
-            "No annotation or anonymization operation found; returning original texts."
-        )
-        return text_list
+            return text_list
+        except Exception as e:
+            self.logger.error(f"Error in _process_text: {str(e)}")
+            raise
 
     def run_text_pipeline_sync(self, str_list: List[str]) -> List[str]:
         """
         Run the text pipeline synchronously on a list of input text.
-
-        Args:
-            str_list (List[str]): A list of text strings to be processed.
-
-        Returns:
-            List[str]: Processed text results based on the enabled operations.
-
-        Raises:
-            Exception: Any error encountered during the text processing.
         """
         try:
-            self.logger.info(f"Starting text pipeline with {len(str_list)} texts.")
+            self.logger.info(f"Starting text pipeline with {len(str_list)} texts")
+
             if OperationType.SCAN in self.operations:
-                annotated_text = self.text_service.batch_annotate_text_sync(str_list)
-                self.logger.info(
-                    f"Text annotation completed with {len(annotated_text)} annotations."
-                )
+                annotated_text = [
+                    self.annotator.annotate_text(text) for text in str_list
+                ]
 
                 if any(
                     op in self.operations
@@ -192,12 +182,8 @@ class DataFog:
                             str_list, annotated_text, strict=True
                         )
                     ]
-                else:
-                    return annotated_text
+                return annotated_text
 
-            self.logger.info(
-                "No annotation or anonymization operation found; returning original texts."
-            )
             return str_list
         except Exception as e:
             self.logger.error(f"Error in run_text_pipeline_sync: {str(e)}")
@@ -222,35 +208,3 @@ class DataFog:
         """
         for key, value in attributes.items():
             setattr(self, key, value)
-
-
-class TextPIIAnnotator:
-    """
-    Class for annotating PII in text.
-
-    Provides functionality to detect and annotate Personally Identifiable Information (PII) in text.
-
-    Attributes:
-        text_annotator: SpacyPIIAnnotator instance for text annotation.
-        spark_processor: Optional SparkService for distributed processing.
-    """
-
-    def __init__(self):
-        self.text_annotator = SpacyPIIAnnotator.create()
-        self.spark_processor: SparkService = None
-
-    def run(self, text, output_path=None):
-        try:
-            annotated_text = self.text_annotator.annotate(text)
-
-            # Optionally, output the results to a JSON file
-            if output_path:
-                with open(output_path, "w") as f:
-                    json.dump(annotated_text, f)
-
-            return annotated_text
-
-        finally:
-            # Ensure Spark resources are released
-            if self.spark_processor:
-                self.spark_processor.stop()
